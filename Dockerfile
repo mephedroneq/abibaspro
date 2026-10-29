@@ -2,20 +2,26 @@ FROM python:3.12-slim
 
 WORKDIR /usr/src/app
 
-ENV PIP_DEFAULT_TIMEOUT=120 \
-    PIP_RETRIES=10 \
-    DATA_DIR=/app/data \
-    PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    DATA_DIR=/app/data
 
+# Системные зависимости для Pillow (картинки)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjpeg-dev \
+    zlib1g-dev \
+    libpng-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем нужные библиотеки
 RUN pip install --no-cache-dir \
-    pyTelegramBotAPI \
-    python-telegram-bot \
-    requests
+    discord.py \
+    Pillow
 
+# Копируем код
 COPY . .
 
+# Папка для данных (база будет сохраняться)
 RUN mkdir -p /app/data && chmod 777 /app/data
 
-RUN echo 'from http.server import HTTPServer, SimpleHTTPRequestHandler\nHTTPServer(("0.0.0.0", 3000), SimpleHTTPRequestHandler).serve_forever()' > /usr/src/app/server.py
-
-CMD ["python", "/usr/src/app/server.py"]
+# Запускаем бота
+CMD ["python", "voice_tracker.py"]
