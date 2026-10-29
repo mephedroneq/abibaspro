@@ -1,3 +1,4 @@
+import glob
 import io
 import os
 import time
@@ -204,126 +205,59 @@ def card_chance(card: dict) -> float:
 
 
 # ---------- КАРТИНКИ ----------
-def load_font(size, bold=False):
-    names = [FONT_BOLD_PATH, "arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold \
-        else [FONT_PATH, "arial.ttf", "DejaVuSans.ttf"]
-    for n in names:
-        try:
-            return ImageFont.truetype(n, size)
-        except OSError:
-            pass
-    return ImageFont.load_default()
+_font_cache = {}
 
 
-def format_hm(sec: int) -> str:
-    h, rem = divmod(int(sec), 3600)
-    return f"{h} ч {rem // 60} мин"
+def _pick_font_file(bold: bool):
+    """Ищет .ttf рядом с ботом (и в папке fonts). Подходит Roboto с любыми именами файлов."""
+    files = glob.glob(os.path.join(BASE_DIR, "*.ttf")) + glob.glob(os.path.join(BASE_DIR, "fonts", "*.ttf"))
+    bad = ("italic", "light", "thin", "medium", "black", "condensed", "semi", "extra")
 
+    def name(p):
+        return os.path.basename(p).lower()
 
-def circle_avatar(data: bytes, size: int):
-    img = Image.open(io.BytesIO(data)).convert("RGBA").resize((size, size))
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
-    img.putalpha(mask)
-    return img
-
-
-def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) -> io.BytesIO:
-    bg = Image.open(BG_PATH).convert("RGBA")
-    W = 1000
-    s = W / bg.width
-    H = int(bg.height * s)
-    img = bg.resize((W, H), Image.LANCZOS)
-
-    def S(v):
-        return int(v * s)
-
-    d = ImageDraw.Draw(img)
-
-    box = (S(600), S(335), S(1380), S(610))
-    fill = img.crop((S(330), S(340), S(580), S(560))).resize((1, 1), Image.BOX).getpixel((0, 0))
-    d.rectangle(box, fill=fill)
-
-    av_size = S(230)
-    av = circle_avatar(avatar_bytes, av_size)
-    ax, ay = S(340), S(330)
-    img.paste(av, (ax, ay), av)
-    d.ellipse((ax, ay, ax + av_size, ay + av_size), outline=(130, 80, 255), width=3)
-
-    d.text((S(633), S(270)), name[:22], font=load_font(S(64), True), fill=(255, 255, 255))
-    d.text((S(633), S(360)), "Время в голосовых каналах", font=load_font(S(50)), fill=(135, 125, 175))
-    d.text((S(633), S(440)), format_hm(total), font=load_font(S(105), True), fill=(110, 70, 240))
-    if current > 0:
-        d.text((S(633), S(570)), f"в т.ч. текущая сессия: {format_hm(current)}",
-               font=load_font(S(34)), fill=(135, 125, 175))
-
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, "PNG")
-    buf.seek(0)
-    return buf
-
-
-def make_top_card(rows) -> io.BytesIO:
-    bg = Image.open(TOP_BG_PATH).convert("RGBA")
-    W = 1200
-    s = W / bg.width
-    H = int(bg.height * s)
-    img = bg.resize((W, H), Image.LANCZOS)
-
-    def S(v):
-        return int(v * s)
-
-    d = ImageDraw.Draw(img)
-
-    fill = img.crop((S(850), S(345), S(1200), S(655))).resize((1, 1), Image.BOX).getpixel((0, 0))
-    d.rectangle((S(420), S(335), S(1510), S(670)), fill=fill)
-
-    pitch = 79 if len(rows) <= 4 else 63
-    y0 = 380
-    for i, (name, secs) in enumerate(rows[:5], 1):
-        y = S(y0 + (i - 1) * pitch)
-        d.text((S(450), y), f"{i}.", font=load_font(S(40), True), fill=(120, 90, 240), anchor="lm")
-        d.text((S(535), y), name[:18], font=load_font(S(42)), fill=(255, 255, 255), anchor="lm")
-        d.text((S(1480), y), format_hm(secs), font=load_font(S(40), True), fill=(140, 105, 255), anchor="rm")
-
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, "PNG")
-    buf.seek(0)
-    return buf
-
-
-def make_card_image(card: dict) -> io.BytesIO:
-    """Картинка карточки: берётся из cards/<image>, а если файла нет, рисуется заглушка."""
-    path = os.path.join(CARDS_DIR, card.get("image") or "")
-    if card.get("image") and os.path.isfile(path):
-        img = Image.open(path).convert("RGBA")
-        img.thumbnail((800, 1100))
+    if bold:
+        for p in files:
+            if "bold" in name(p) and not any(b in name(p) for b in bad):
+                return p
     else:
-        W, H = 600, 840
-        color = RARITY_COLORS.get(card["rarity"], (150, 155, 160))
-        img = Image.new("RGBA", (W, H), (30, 20, 35, 255))
-        d = ImageDraw.Draw(img)
-        # вертикальный градиент внутри рамки
-        for y in range(H):
-            t = y / H
-            d.line((0, y, W, y), fill=(int(255 - 60 * t), int(170 - 60 * t), int(205 - 40 * t), 255))
-        d.rounded_rectangle((8, 8, W - 8, H - 8), radius=40, outline=color, width=10)
-        # большая первая буква вместо рисунка
-        d.text((W // 2, 330), card["name"][:1].upper(), font=load_font(280, True),
-               fill=(255, 255, 255, 140), anchor="mm")
-        d.text((W // 2, 60), card["rarity"].upper(), font=load_font(30, True), fill=color, anchor="mm")
-        # табличка с ником
-        d.rounded_rectangle((50, 600, W - 50, 790), radius=22, fill=(255, 205, 225), outline=(230, 190, 90), width=6)
-        d.text((W // 2, 640), CARD_SERIES, font=load_font(26, True), fill=(200, 80, 130), anchor="mm")
-        d.text((W // 2, 700), card["name"][:16], font=load_font(60, True), fill=(205, 70, 125), anchor="mm")
-        d.text((W // 2, 760), CARD_SEASON, font=load_font(24, True), fill=(200, 80, 130), anchor="mm")
-
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    buf.seek(0)
-    return buf
+        for p in files:
+            if ("regular" in name(p) or name(p) in ("font.ttf",)) and "italic" not in name(p):
+                return p
+    # запасной вариант: любой подходящий файл (например, один variable-шрифт)
+    for p in files:
+        if "italic" not in name(p):
+            return p
+    return None
 
 
+def load_font(size, bold=False):
+    key = (size, bold)
+    if key in _font_cache:
+        return _font_cache[key]
+
+    font = None
+    path = _pick_font_file(bold)
+    candidates = [path] if path else []
+    candidates += ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+                   else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                   "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"]
+    for n in candidates:
+        try:
+            font = ImageFont.truetype(n, size)
+            # если это variable-шрифт Roboto[wght].ttf, выбираем начертание
+            try:
+                font.set_variation_by_name("Bold" if bold else "Regular")
+            except Exception:
+                pass
+            break
+        except OSError:
+            continue
+
+    if font is None:
+        font = ImageFont.load_default()
+    _font_cache[key] = font
+    return font
 # ---------- СОБЫТИЯ ----------
 @tasks.loop(seconds=30)
 async def flush_voice_time():
