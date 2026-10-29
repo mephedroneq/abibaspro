@@ -13,7 +13,11 @@ from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------- НАСТРОЙКИ ----------
-TOKEN = "MTU2NDcyMDkwMjA3ODM0MTI2MQ.GCExVV.En7w4yjQ2VQHbqBcqYEUcVo-JvpEnhNqfDUDKE"
+TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("Токен не найден! Укажи DISCORD_BOT_TOKEN в настройках бота на Bothost")
+TOKEN = TOKEN.strip().strip('"').strip("'").strip()
+print(f"[ТОКЕН] найден, длина: {len(TOKEN)} (обычно около 70-75)", flush=True)
 AFK_CHANNEL_IDS = []          # ID каналов, которые не считаем, например [123456789, 987654321]
 
 COINS_PER_MINUTE = 1          # сколько монет даётся за минуту в войсе
