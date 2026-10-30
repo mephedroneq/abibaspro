@@ -204,39 +204,72 @@ def card_chance(card: dict) -> float:
     return card["weight"] / total * 100
 
 
-# ---------- КАРТИНКИ ----------
+# ---------- ШРИФТЫ ----------
 _font_cache = {}
+_logged = set()
+
+SYSTEM_BOLD = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "DejaVuSans-Bold.ttf",
+]
+SYSTEM_REGULAR = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "DejaVuSans.ttf",
+]
 
 
-def _pick_font_file(bold: bool):
-    """Ищет .ttf рядом с ботом (и в папке fonts). Подходит Roboto с любыми именами файлов."""
-    files = glob.glob(os.path.join(BASE_DIR, "*.ttf")) + glob.glob(os.path.join(BASE_DIR, "fonts", "*.ttf"))
+def _local_fonts(bold: bool):
+    """Возвращает список (путь, настоящий_ли_жирный) в порядке приоритета."""
+    files = []
+    for pattern in ("*.ttf", "*.otf", os.path.join("fonts", "*.ttf"), os.path.join("fonts", "*.otf")):
+        files += glob.glob(os.path.join(BASE_DIR, pattern))
+    files = sorted(set(files))
 
     def name(p):
         return os.path.basename(p).lower()
 
-    # 1) точные имена font.ttf / font_bold.ttf
-    exact = "font_bold.ttf" if bold else "font.ttf"
-    for p in files:
-        if name(p) == exact:
-            return p
-    # 2) по слову bold / regular в имени
     bad = ("italic", "light", "thin", "medium", "black", "condensed", "semi", "extra")
+    result = []
+
+    def add(p, genuine):
+        if p not in [r[0] for r in result]:
+            result.append((p, genuine))
+
     if bold:
         for p in files:
+            if name(p) == "font_bold.ttf":
+                add(p, True)
+        for p in files:
             if "bold" in name(p) and not any(b in name(p) for b in bad):
-                return p
+                add(p, True)
+        # обычные шрифты как запасной вариант (будут утолщены обводкой)
+        for p in files:
+            if "italic" not in name(p):
+                add(p, False)
     else:
         for p in files:
+            if name(p) == "font.ttf":
+                add(p, True)
+        for p in files:
             if "regular" in name(p) and "italic" not in name(p):
-                return p
-    # 3) любой подходящий файл
-    for p in files:
-        if "italic" not in name(p) and "bold" not in name(p):
-            return p
-    for p in files:
-        return p
-    return None
+                add(p, True)
+        for p in files:
+            if "italic" not in name(p) and "bold" not in name(p):
+                add(p, True)
+        for p in files:
+            add(p, True)
+    return result
+
+
+def _has_cyrillic(font) -> bool:
+    """Если у шрифта нет кириллицы, разные буквы рисуются одинаковыми квадратиками."""
+    try:
+        a, b = font.getmask("Ж"), font.getmask("Щ")
+        return a.size != b.size or a.tobytes() != b.tobytes()
+    except Exception:
+        return False
 
 
 def load_font(size, bold=False):
@@ -244,30 +277,62 @@ def load_font(size, bold=False):
     if key in _font_cache:
         return _font_cache[key]
 
-    path = _pick_font_file(bold)
-    candidates = [path] if path else []
-    candidates += [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
-    ]
+    candidates = _local_fonts(bold)
+    sys_list = SYSTEM_BOLD if bold else SYSTEM_REGULAR
+    candidates += [(p, True) for p in sys_list]
+    if bold:
+        candidates += [(p, False) for p in SYSTEM_REGULAR]
+
     font = None
-    for n in candidates:
+    for path, genuine in candidates:
         try:
-            font = ImageFont.truetype(n, size)
-            try:  # для variable-шрифтов
-                font.set_variation_by_name("Bold" if bold else "Regular")
-            except Exception:
-                pass
-            break
-        except OSError:
+            f = ImageFont.truetype(path, size)
+        except Exception:
             continue
+        faux = bold and not genuine
+        try:  # variable-шрифты (Roboto[wght].ttf и т.п.)
+            f.set_variation_by_name("Bold" if bold else "Regular")
+            if bold:
+                faux = False
+        except Exception:
+            pass
+        if not _has_cyrillic(f):
+            continue
+        f._faux = faux
+        font = f
+        if (path, bold) not in _logged:
+            _logged.add((path, bold))
+            print(f"[ШРИФТ] {'bold' if bold else 'regular'}: {path}{' (+обводка)' if faux else ''}", flush=True)
+        break
+
     if font is None:
-        font = ImageFont.load_default()
+        print(f"[ШРИФТ] ВНИМАНИЕ: не найден шрифт с кириллицей ({'bold' if bold else 'regular'}). "
+              f"Положи font.ttf и font_bold.ttf рядом с ботом!", flush=True)
+        try:
+            font = ImageFont.load_default(size)
+        except TypeError:
+            font = ImageFont.load_default()
+        try:
+            font._faux = False
+        except Exception:
+            pass
+
     _font_cache[key] = font
     return font
 
 
+def txt(d, xy, text, font, fill, anchor=None):
+    """Рисует текст; если жирного шрифта нет, имитирует его обводкой."""
+    kw = {}
+    if getattr(font, "_faux", False):
+        kw["stroke_width"] = max(1, round(getattr(font, "size", 20) / 40))
+        kw["stroke_fill"] = fill
+    if anchor:
+        kw["anchor"] = anchor
+    d.text(xy, text, font=font, fill=fill, **kw)
+
+
+# ---------- КАРТИНКИ ----------
 def format_hm(sec: int) -> str:
     h, rem = divmod(int(sec), 3600)
     return f"{h} ч {rem // 60} мин"
@@ -303,12 +368,12 @@ def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) ->
     img.paste(av, (ax, ay), av)
     d.ellipse((ax, ay, ax + av_size, ay + av_size), outline=(130, 80, 255), width=3)
 
-    d.text((S(633), S(270)), name[:22], font=load_font(S(64), True), fill=(255, 255, 255))
-    d.text((S(633), S(360)), "Время в голосовых каналах", font=load_font(S(50)), fill=(135, 125, 175))
-    d.text((S(633), S(440)), format_hm(total), font=load_font(S(105), True), fill=(110, 70, 240))
+    txt(d, (S(633), S(270)), name[:22], load_font(S(64), True), (255, 255, 255))
+    txt(d, (S(633), S(360)), "Время в голосовых каналах", load_font(S(50)), (135, 125, 175))
+    txt(d, (S(633), S(440)), format_hm(total), load_font(S(105), True), (110, 70, 240))
     if current > 0:
-        d.text((S(633), S(570)), f"в т.ч. текущая сессия: {format_hm(current)}",
-               font=load_font(S(34)), fill=(135, 125, 175))
+        txt(d, (S(633), S(570)), f"в т.ч. текущая сессия: {format_hm(current)}",
+            load_font(S(34)), (135, 125, 175))
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, "PNG")
@@ -335,9 +400,9 @@ def make_top_card(rows) -> io.BytesIO:
     y0 = 380
     for i, (name, secs) in enumerate(rows[:5], 1):
         y = S(y0 + (i - 1) * pitch)
-        d.text((S(450), y), f"{i}.", font=load_font(S(40), True), fill=(120, 90, 240), anchor="lm")
-        d.text((S(535), y), name[:18], font=load_font(S(42)), fill=(255, 255, 255), anchor="lm")
-        d.text((S(1480), y), format_hm(secs), font=load_font(S(40), True), fill=(140, 105, 255), anchor="rm")
+        txt(d, (S(450), y), f"{i}.", load_font(S(40), True), (120, 90, 240), anchor="lm")
+        txt(d, (S(535), y), name[:18], load_font(S(42)), (255, 255, 255), anchor="lm")
+        txt(d, (S(1480), y), format_hm(secs), load_font(S(40), True), (140, 105, 255), anchor="rm")
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, "PNG")
@@ -362,14 +427,13 @@ def make_card_image(card: dict) -> io.BytesIO:
             d.line((0, y, W, y), fill=(int(255 - 60 * t), int(170 - 60 * t), int(205 - 40 * t), 255))
         d.rounded_rectangle((8, 8, W - 8, H - 8), radius=40, outline=color, width=10)
         # большая первая буква вместо рисунка
-        d.text((W // 2, 330), card["name"][:1].upper(), font=load_font(280, True),
-               fill=(255, 255, 255, 140), anchor="mm")
-        d.text((W // 2, 60), card["rarity"].upper(), font=load_font(30, True), fill=color, anchor="mm")
+        txt(d, (W // 2, 330), card["name"][:1].upper(), load_font(280, True), (255, 255, 255, 140), anchor="mm")
+        txt(d, (W // 2, 60), card["rarity"].upper(), load_font(30, True), color, anchor="mm")
         # табличка с ником
         d.rounded_rectangle((50, 600, W - 50, 790), radius=22, fill=(255, 205, 225), outline=(230, 190, 90), width=6)
-        d.text((W // 2, 640), CARD_SERIES, font=load_font(26, True), fill=(200, 80, 130), anchor="mm")
-        d.text((W // 2, 700), card["name"][:16], font=load_font(60, True), fill=(205, 70, 125), anchor="mm")
-        d.text((W // 2, 760), CARD_SEASON, font=load_font(24, True), fill=(200, 80, 130), anchor="mm")
+        txt(d, (W // 2, 640), CARD_SERIES, load_font(26, True), (200, 80, 130), anchor="mm")
+        txt(d, (W // 2, 700), card["name"][:16], load_font(60, True), (205, 70, 125), anchor="mm")
+        txt(d, (W // 2, 760), CARD_SEASON, load_font(24, True), (200, 80, 130), anchor="mm")
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
@@ -529,7 +593,7 @@ async def shop(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="opencard", description=f"Купить случайную карточку игрока")
+@bot.tree.command(name="opencard", description="Купить случайную карточку игрока")
 async def opencard(interaction: discord.Interaction):
     await interaction.response.defer()
     user_id, guild_id = interaction.user.id, interaction.guild.id
