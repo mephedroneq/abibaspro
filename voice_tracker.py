@@ -28,7 +28,7 @@ CARD_SEASON = "SEASON IV"     # надпись под ником на карто
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BG_PATH = os.path.join(BASE_DIR, "background.png")          # фон для /voice
 TOP_BG_PATH = os.path.join(BASE_DIR, "top_background.png")  # фон для /voicetop
-DB_PATH = os.path.join(BASE_DIR, "voice_time.db")
+DB_PATH = os.getenv("DB_PATH") or os.path.join(BASE_DIR, "voice_time.db")
 CARDS_DIR = os.path.join(BASE_DIR, "cards")                 # сюда кладём картинки карточек
 FONT_PATH = os.path.join(BASE_DIR, "font.ttf")              # необязательно: свой шрифт
 FONT_BOLD_PATH = os.path.join(BASE_DIR, "font_bold.ttf")    # необязательно: свой жирный шрифт
@@ -681,6 +681,44 @@ async def addcoins(interaction: discord.Interaction, member: discord.Member, amo
     give_coins(member.id, interaction.guild.id, amount)
     await interaction.response.send_message(
         f"{member.mention}: {amount:+d} монет. Баланс: {int(get_coins(member.id, interaction.guild.id))}")
+
+
+def set_time(user_id: int, guild_id: int, seconds: int, coins: float = None):
+    """Жёстко задаёт общее время (и при желании баланс монет)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO voice_time (user_id, guild_id, total_seconds)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, guild_id) DO UPDATE SET total_seconds = ?
+    """, (user_id, guild_id, seconds, seconds))
+    if coins is not None:
+        c.execute("""
+            INSERT INTO wallet (user_id, guild_id, coins)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, guild_id) DO UPDATE SET coins = ?
+        """, (user_id, guild_id, coins, coins))
+    conn.commit()
+    conn.close()
+
+
+@bot.tree.command(name="setvoice", description="Задать время в войсе участнику (только админы)")
+@app_commands.describe(member="Кому", hours="Часы", minutes="Минуты",
+                       coins="Монеты (если не указать, баланс не меняется)")
+@app_commands.default_permissions(administrator=True)
+async def setvoice(interaction: discord.Interaction, member: discord.Member,
+                   hours: int, minutes: int = 0, coins: int = None):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Только для администраторов.", ephemeral=True)
+        return
+    seconds = hours * 3600 + minutes * 60
+    set_time(member.id, interaction.guild.id, seconds, coins)
+    # сбрасываем отсчёт текущей сессии, чтобы не добавилось лишнего
+    if member.id in voice_sessions:
+        voice_sessions[member.id] = time.time()
+    await interaction.response.send_message(
+        f"{member.mention}: время задано {hours} ч {minutes} мин."
+        + (f" Монеты: {coins}." if coins is not None else ""))
 
 
 # ---------- ЗАПУСК ----------
