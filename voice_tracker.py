@@ -8,6 +8,7 @@ import sqlite3
 import asyncio
 from datetime import timedelta
 
+import numpy as np
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -43,14 +44,24 @@ DB_PATH = os.getenv("DB_PATH") or os.path.join(BASE_DIR, "voice_time.db")
 BACKUP_CHANNEL_ID = int(os.getenv("BACKUP_CHANNEL_ID") or 0)
 CARDS_DIR = os.path.join(BASE_DIR, "cards")                 # сюда кладём картинки карточек
 
-# --- Положение таблицы лидеров на top_background.png ---
-# Рамка (x1, y1, x2, y2) в координатах оригинального фона. Таблица центрируется внутри неё.
-# Значения подобраны по скриншоту; если всё ещё смещено, меняй TOP_DX / TOP_DY
-# (плюс = вправо / вниз, минус = влево / вверх) или сами координаты рамки.
-TOP_FRAME = (203, 242, 1539, 739)
-TOP_DX = 0
-TOP_DY = 0
-TOP_TABLE_W = 1030            # ширина таблицы (от номера до времени)
+# --- Таблица лидеров (/voicetop) ---
+# Все координаты заданы в системе фона 1935x813 (как на макете) и сами масштабируются под размер файла.
+# Для точного совпадения с макетом нужен чистый фон top_background.png (без текста и линий в рамке).
+TOP_OUT_W = 1600              # ширина итоговой картинки
+TOP_RANK_X = 346              # левый край номера места
+TOP_NAME_X = 455              # левый край ника
+TOP_TIME_RIGHT = 1481         # правый край времени
+TOP_BASELINE_1 = 334          # базовая линия первой строки (при 4 местах)
+TOP_PITCH = 82                # расстояние между строками (при 5 местах автоматически уменьшается)
+TOP_CENTER_Y = 441.5          # вертикальный центр блока строк
+TOP_LINE_CENTER_X = 940       # центр разделительных линий
+TOP_LINE_X = (320, 1570)      # где начинаются и заканчиваются линии
+TOP_LINE_COLOR = (185, 70, 235)
+TOP_RANK_COLOR = (125, 80, 250)
+TOP_NAME_COLOR = (255, 255, 255)
+TOP_TIME_COLOR = (125, 80, 250)
+TOP_DX = 0                    # общий сдвиг таблицы (плюс = вправо)
+TOP_DY = 0                    # общий сдвиг таблицы (плюс = вниз)
 
 # Цвета редкостей (для карточек-заглушек и сообщений)
 RARITY_COLORS = {
@@ -435,39 +446,49 @@ def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) ->
 
 
 def make_top_card(rows) -> io.BytesIO:
-    img, s = get_bg(TOP_BG_PATH, 1200)
+    img, s = get_bg(TOP_BG_PATH, 1935)   # рисуем в «родном» размере макета, потом уменьшаем
 
     def S(v):
-        return int(v * s)
-
-    d = ImageDraw.Draw(img)
+        return int(round(v * s))
 
     rows = rows[:5]
     n = len(rows)
-    pitch = 79 if n <= 4 else 63
+    pitch = TOP_PITCH if n <= 4 else 70
+    first_center = TOP_CENTER_Y - (n - 1) * pitch / 2 + TOP_DY
+    baselines = [first_center + 16 + i * pitch for i in range(n)]
 
-    # --- центрирование таблицы по рамке ---
-    fx1, fy1, fx2, fy2 = TOP_FRAME
-    cx = (fx1 + fx2) / 2 + TOP_DX
-    cy = (fy1 + fy2) / 2 + TOP_DY
-    left = cx - TOP_TABLE_W / 2
-    right = cx + TOP_TABLE_W / 2
-    y_first = cy - (n - 1) * pitch / 2
-    y_last = y_first + (n - 1) * pitch
+    # --- разделительные линии между строками (светлее в центре, к краям гаснут) ---
+    if n > 1:
+        arr = np.array(img.convert("RGB"), dtype=np.float32)
+        x_a, x_b = S(TOP_LINE_X[0] + TOP_DX), S(TOP_LINE_X[1] + TOP_DX)
+        xs = np.arange(x_a, x_b)
+        cx = (TOP_LINE_CENTER_X + TOP_DX) * s
+        alpha_x = np.exp(-((xs - cx) / (330 * s)) ** 2)
+        color = np.array(TOP_LINE_COLOR, dtype=np.float32)
+        for i in range(n - 1):
+            y = S(baselines[i] + 25)
+            for dy, w in ((-1, 0.12), (0, 1.0), (1, 0.35)):
+                yy = y + dy
+                if 0 <= yy < arr.shape[0]:
+                    a = (alpha_x * w)[:, None]
+                    arr[yy, x_a:x_b] = arr[yy, x_a:x_b] * (1 - a) + color * a
+        img = Image.fromarray(arr.clip(0, 255).astype(np.uint8)).convert("RGBA")
 
-    # закрашиваем старую таблицу на фоне (область старой + область новой)
-    fill = img.crop((S(850), S(345), S(1200), S(655))).resize((1, 1), Image.BOX).getpixel((0, 0))
-    d.rectangle((S(min(420, left - 40)), S(min(335, y_first - 45)),
-                 S(max(1510, right + 30)), S(max(670, y_last + 45))), fill=fill)
+    d = ImageDraw.Draw(img)
+    f_rank = load_font(S(45), True)
+    f_name = load_font(S(44))
+    f_time = load_font(S(43), True)
 
-    for i, (name, secs) in enumerate(rows, 1):
-        y = S(y_first + (i - 1) * pitch)
-        txt(d, (S(left), y), f"{i}.", load_font(S(40), True), (120, 90, 240), anchor="lm")
-        txt(d, (S(left + 85), y), name[:18], load_font(S(42)), (255, 255, 255), anchor="lm")
-        txt(d, (S(right), y), format_hm(secs), load_font(S(40), True), (140, 105, 255), anchor="rm")
+    for i, ((name, secs), base) in enumerate(zip(rows, baselines), 1):
+        y = S(base)
+        txt(d, (S(TOP_RANK_X + TOP_DX), y), f"{i}.", f_rank, TOP_RANK_COLOR, anchor="ls")
+        txt(d, (S(TOP_NAME_X + TOP_DX), y), name[:20], f_name, TOP_NAME_COLOR, anchor="ls")
+        txt(d, (S(TOP_TIME_RIGHT + TOP_DX), y), format_hm(secs), f_time, TOP_TIME_COLOR, anchor="rs")
 
+    out_h = int(img.height * TOP_OUT_W / img.width)
+    img = img.convert("RGB").resize((TOP_OUT_W, out_h), Image.LANCZOS)
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, "PNG")
+    img.save(buf, "PNG")
     buf.seek(0)
     return buf
 
