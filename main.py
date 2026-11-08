@@ -45,21 +45,21 @@ BACKUP_CHANNEL_ID = int(os.getenv("BACKUP_CHANNEL_ID") or 0)
 CARDS_DIR = os.path.join(BASE_DIR, "cards")                 # сюда кладём картинки карточек
 
 # --- Таблица лидеров (/voicetop) ---
-# Все координаты заданы в системе фона 1935x813 (как на макете) и сами масштабируются под размер файла.
-# Для точного совпадения с макетом нужен чистый фон top_background.png (без текста и линий в рамке).
+# Все координаты заданы в пикселях файла top_background.png (1967x799) и сами масштабируются под размер файла.
+# Нужен чистый фон top_background.png (без текста внутри рамки).
 TOP_OUT_W = 1600              # ширина итоговой картинки
-TOP_RANK_X = 346              # левый край номера места
-TOP_NAME_X = 455              # левый край ника
-TOP_TIME_RIGHT = 1481         # правый край времени
-TOP_BASELINE_1 = 334          # базовая линия первой строки (при 4 местах)
-TOP_PITCH = 82                # расстояние между строками (при 5 местах автоматически уменьшается)
-TOP_CENTER_Y = 441.5          # вертикальный центр блока строк
-TOP_LINE_CENTER_X = 940       # центр разделительных линий
-TOP_LINE_X = (320, 1570)      # где начинаются и заканчиваются линии
-TOP_LINE_COLOR = (185, 70, 235)
-TOP_RANK_COLOR = (125, 80, 250)
+TOP_RANK_X = 300              # левый край номера места
+TOP_NAME_X = 400              # левый край ника
+TOP_TIME_RIGHT = 1670         # правый край времени
+TOP_PITCH = 66                # расстояние между строками при 1-4 местах
+TOP_PITCH_5 = 56              # расстояние между строками при 5 местах
+TOP_CENTER_Y = 450            # вертикальный центр блока строк
+TOP_LINE_CENTER_X = 985       # центр разделительных линий
+TOP_LINE_X = (290, 1680)      # где начинаются и заканчиваются линии
+TOP_LINE_COLOR = (170, 30, 30)
+TOP_RANK_COLOR = (215, 45, 45)
 TOP_NAME_COLOR = (255, 255, 255)
-TOP_TIME_COLOR = (125, 80, 250)
+TOP_TIME_COLOR = (225, 225, 225)
 TOP_DX = 0                    # общий сдвиг таблицы (плюс = вправо)
 TOP_DY = 0                    # общий сдвиг таблицы (плюс = вниз)
 
@@ -415,6 +415,7 @@ def circle_avatar(data: bytes, size: int):
 
 
 def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) -> io.BytesIO:
+    # фон background.png (1967x799) должен быть чистым: без текста внутри рамки
     img, s = get_bg(BG_PATH, 1000)
 
     def S(v):
@@ -422,22 +423,18 @@ def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) ->
 
     d = ImageDraw.Draw(img)
 
-    box = (S(600), S(335), S(1380), S(610))
-    fill = img.crop((S(330), S(340), S(580), S(560))).resize((1, 1), Image.BOX).getpixel((0, 0))
-    d.rectangle(box, fill=fill)
-
-    av_size = S(230)
+    av_size = S(210)
     av = circle_avatar(avatar_bytes, av_size)
-    ax, ay = S(340), S(330)
+    ax, ay = S(440), S(349)
     img.paste(av, (ax, ay), av)
-    d.ellipse((ax, ay, ax + av_size, ay + av_size), outline=(130, 80, 255), width=3)
+    d.ellipse((ax, ay, ax + av_size, ay + av_size), outline=(200, 40, 40), width=3)
 
-    txt(d, (S(633), S(270)), name[:22], load_font(S(64), True), (255, 255, 255))
-    txt(d, (S(633), S(360)), "Время в голосовых каналах", load_font(S(50)), (135, 125, 175))
-    txt(d, (S(633), S(440)), format_hm(total), load_font(S(105), True), (110, 70, 240))
+    txt(d, (S(710), S(318)), name[:22], load_font(S(54), True), (255, 255, 255))
+    txt(d, (S(710), S(398)), "Время в голосовых каналах", load_font(S(40)), (160, 160, 165))
+    txt(d, (S(710), S(448)), format_hm(total), load_font(S(92), True), (235, 235, 235))
     if current > 0:
-        txt(d, (S(633), S(570)), f"в т.ч. текущая сессия: {format_hm(current)}",
-            load_font(S(34)), (135, 125, 175))
+        txt(d, (S(710), S(562)), f"в т.ч. текущая сессия: {format_hm(current)}",
+            load_font(S(30)), (200, 70, 70))
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, "PNG")
@@ -446,16 +443,16 @@ def make_stats_card(name: str, avatar_bytes: bytes, total: int, current: int) ->
 
 
 def make_top_card(rows) -> io.BytesIO:
-    img, s = get_bg(TOP_BG_PATH, 1935)   # рисуем в «родном» размере макета, потом уменьшаем
+    img, s = get_bg(TOP_BG_PATH, 1967)   # рисуем в «родном» размере макета, потом уменьшаем
 
     def S(v):
         return int(round(v * s))
 
     rows = rows[:5]
     n = len(rows)
-    pitch = TOP_PITCH if n <= 4 else 70
+    pitch = TOP_PITCH if n <= 4 else TOP_PITCH_5
     first_center = TOP_CENTER_Y - (n - 1) * pitch / 2 + TOP_DY
-    baselines = [first_center + 16 + i * pitch for i in range(n)]
+    baselines = [first_center + 14 + i * pitch for i in range(n)]
 
     # --- разделительные линии между строками (светлее в центре, к краям гаснут) ---
     if n > 1:
@@ -463,10 +460,10 @@ def make_top_card(rows) -> io.BytesIO:
         x_a, x_b = S(TOP_LINE_X[0] + TOP_DX), S(TOP_LINE_X[1] + TOP_DX)
         xs = np.arange(x_a, x_b)
         cx = (TOP_LINE_CENTER_X + TOP_DX) * s
-        alpha_x = np.exp(-((xs - cx) / (330 * s)) ** 2)
+        alpha_x = np.exp(-((xs - cx) / (420 * s)) ** 2)
         color = np.array(TOP_LINE_COLOR, dtype=np.float32)
         for i in range(n - 1):
-            y = S(baselines[i] + 25)
+            y = S(baselines[i] + pitch * 0.3)
             for dy, w in ((-1, 0.12), (0, 1.0), (1, 0.35)):
                 yy = y + dy
                 if 0 <= yy < arr.shape[0]:
@@ -475,9 +472,9 @@ def make_top_card(rows) -> io.BytesIO:
         img = Image.fromarray(arr.clip(0, 255).astype(np.uint8)).convert("RGBA")
 
     d = ImageDraw.Draw(img)
-    f_rank = load_font(S(45), True)
-    f_name = load_font(S(44))
-    f_time = load_font(S(43), True)
+    f_rank = load_font(S(38), True)
+    f_name = load_font(S(36))
+    f_time = load_font(S(36), True)
 
     for i, ((name, secs), base) in enumerate(zip(rows, baselines), 1):
         y = S(base)
