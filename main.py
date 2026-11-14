@@ -1317,205 +1317,134 @@ def make_profile_card(
     partner_name: str = None,
     partner_avatar_bytes: bytes = None,
     mod_names: dict = None,
-    bg_key: str = "bg_nil_tree",
 ) -> io.BytesIO:
-    """Рендерит карточку профиля на атмосферном фоне (NilSpace / Agency ARG) с frosted-glass панелями."""
-    W, H = 1440, 920
+    """Рендерит карточку профиля на фоне Agency 'ARG' (1536x1024)."""
+    img, s = get_bg(BG_PATH)
+    s = img.width / 1536.0
 
-    # 1. Загрузка фона ("тот который скинул" или "тот который был раньше")
-    bg_files = {
-        "bg_nil_tree": os.path.join(BASE_DIR, "backgrounds", "bg_nil_tree.jpg"),
-        "bg_nil_monolith": os.path.join(BASE_DIR, "backgrounds", "bg_nil_monolith.jpg"),
-        "bg_nil_pillars": os.path.join(BASE_DIR, "backgrounds", "bg_nil_pillars.jpg"),
-        "default": BG_PATH,
-        "classic": BG_PATH,
-    }
-    target_bg_path = bg_files.get(bg_key) or bg_files.get("bg_nil_tree") or BG_PATH
-    if not os.path.isfile(target_bg_path):
-        target_bg_path = BG_PATH
+    def S(v):
+        return int(round(v * s))
 
-    if os.path.isfile(target_bg_path):
-        bg_raw = Image.open(target_bg_path).convert("RGBA")
-        scale = max(W / bg_raw.width, H / bg_raw.height)
-        new_w, new_h = int(bg_raw.width * scale), int(bg_raw.height * scale)
-        bg_resized = bg_raw.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        cx = (new_w - W) // 2
-        cy = (new_h - H) // 2
-        img = bg_resized.crop((cx, cy, cx + W, cy + H))
-    else:
-        img = Image.new("RGBA", (W, H), (14, 16, 24, 255))
+    d = ImageDraw.Draw(img)
+    mod_names = mod_names or {}
 
-    # Мягкое атмосферное затемнение, сохраняющее арт фона
-    darken = Image.new("RGBA", (W, H), (6, 8, 14, 130))
-    img = Image.alpha_composite(img, darken)
+    # 1. Квадратный аватар со скруглением внутри красных уголков (78, 254, 250x250)
+    av_size = S(250)
+    av = rounded_avatar(avatar_bytes, av_size, S(10))
+    ax, ay = S(78), S(254)
+    img.paste(av, (ax, ay), av)
+    d.rounded_rectangle((ax, ay, ax + av_size, ay + av_size), radius=S(10),
+                        outline=(195, 38, 48), width=max(1, S(2)))
 
-    # Scanlines (эффект аналогового хоррора / ARG)
-    d_scan = ImageDraw.Draw(img)
-    for y in range(0, H, 4):
-        d_scan.line([(0, y), (W, y)], fill=(0, 0, 0, 30), width=1)
+    # 2. Ник и Discord ID справа от аватара (выше кольца и шкалы XP)
+    clean_name, f_name = fit_text(d, name, S(1020), S(46), S(26), bold=True)
+    txt(d, (S(404), S(238)), clean_name, f_name, (255, 255, 255), anchor="lt")
+    txt(d, (S(404), S(292)), f"ID: {user_id}", load_font(S(20)), (165, 165, 175), anchor="lt")
+    d.line((S(404), S(325), S(1446), S(325)), fill=(85, 34, 38), width=max(1, S(1)))
 
-    # Оверлей для карточек с эффектом матового стекла (Frosted Glass)
-    panel_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(panel_overlay)
+    # 3. Кольцо уровня (центр 483, 411) + шкала XP (612..1446, 403..425)
+    xp = stats["xp"]
+    xp_need = max(1, stats["xp_need"])
+    level = stats["level"]
+    progress = min(1.0, xp / xp_need)
+    xp_left = max(0, xp_need - xp)
 
-    PANEL_FILL = (14, 18, 28, 220)       # Глубокий тёмный полупрозрачный фон блоков
-    PANEL_BORDER = (100, 80, 160, 200)   # Неоновый фиолетовый контур
-    ACCENT_PURPLE = (170, 100, 255)
-    TEXT_WHITE = (255, 255, 255)
-    TEXT_MUTED = (170, 180, 205)
-    TEXT_DIM = (130, 140, 165)
+    _draw_segmented_ring(img, 483, 411, 68, 80, progress, s)
+    d = ImageDraw.Draw(img)
 
-    pad_x = 35
+    txt(d, (S(483), S(400)), str(level), load_font(S(46), True), (255, 255, 255), anchor="mm")
+    txt(d, (S(483), S(434)), "УРОВЕНЬ", load_font(S(15)), (170, 170, 180), anchor="mm")
 
-    # 1. Верхний статус-бар
-    top_y = 30
-    d.rounded_rectangle([pad_x, top_y, W - pad_x, top_y + 55], radius=14, fill=(16, 20, 32, 225), outline=PANEL_BORDER, width=2)
-    txt(d, (pad_x + 25, top_y + 27), "NILSPACE ARCHIVES // СУБЪЕКТ СЕТИ", load_font(21, True), ACCENT_PURPLE, anchor="lm")
-    txt(d, (W - pad_x - 25, top_y + 27), "● СТАТУС: АКТИВЕН", load_font(19, True), (95, 230, 155), anchor="rm")
+    txt(d, (S(612), S(352)), f"{fmt_num(xp)} / {fmt_num(xp_need)} XP",
+        load_font(S(30), True), (255, 255, 255), anchor="lt")
 
-    # 2. Основной блок пользователя
-    usr_y1, usr_y2 = 105, 385
-    d.rounded_rectangle([pad_x, usr_y1, W - pad_x, usr_y2], radius=18, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
-
-    av_sz = 210
-    av_x, av_y = pad_x + 30, usr_y1 + 35
-    if avatar_bytes:
-        try:
-            av_img = rounded_avatar(avatar_bytes, av_sz, 16)
-        except Exception:
-            av_img = Image.new("RGBA", (av_sz, av_sz), (60, 90, 140, 255))
-    else:
-        av_img = Image.new("RGBA", (av_sz, av_sz), (60, 90, 140, 255))
-    panel_overlay.paste(av_img, (av_x, av_y), av_img)
-    d.rounded_rectangle([av_x, av_y, av_x + av_sz, av_y + av_sz], radius=16, outline=ACCENT_PURPLE, width=3)
-
-    info_x = av_x + av_sz + 35
-    clean_name, f_name = fit_text(d, name, 600, 44, 26, bold=True)
-    txt(d, (info_x, usr_y1 + 38), clean_name, f_name, TEXT_WHITE, anchor="lt")
-    txt(d, (info_x, usr_y1 + 92), f"ID: {user_id}", load_font(20), TEXT_MUTED, anchor="lt")
-
-    badge_w, badge_h = 190, 32
-    badge_y = usr_y1 + 126
-    d.rounded_rectangle([info_x, badge_y, info_x + badge_w, badge_y + badge_h], radius=8, fill=(135, 60, 245, 85), outline=ACCENT_PURPLE, width=1)
-    txt(d, (info_x + badge_w // 2, badge_y + badge_h // 2), "ИССЛЕДОВАТЕЛЬ", load_font(17, True), (235, 210, 255), anchor="mm")
-
-    lvl_w, lvl_h = 210, 115
-    lvl_x = W - pad_x - 30 - lvl_w
-    lvl_y = usr_y1 + 35
-    d.rounded_rectangle([lvl_x, lvl_y, lvl_x + lvl_w, lvl_y + lvl_h], radius=14, fill=(22, 26, 42, 240), outline=ACCENT_PURPLE, width=2)
-    txt(d, (lvl_x + lvl_w // 2, lvl_y + 35), "УРОВЕНЬ", load_font(19, True), (190, 170, 245), anchor="mm")
-    txt(d, (lvl_x + lvl_w // 2, lvl_y + 75), str(stats.get("level", 0)), load_font(44, True), TEXT_WHITE, anchor="mm")
-
-    xp = stats.get("xp", 0)
-    xp_need = max(1, stats.get("xp_need", 100))
-    pct = min(1.0, max(0.0, xp / xp_need))
-
-    bar_x1 = info_x
-    bar_x2 = W - pad_x - 30
-    bar_y = usr_y1 + 225
-
-    txt(d, (bar_x1, bar_y - 12), f"Опыт: {fmt_num(xp)} / {fmt_num(xp_need)} XP ({int(pct*100)}%)", load_font(19, True), (230, 235, 250), anchor="lb")
-    txt(d, (bar_x2, bar_y - 12), f"До след. уровня: {fmt_num(max(0, xp_need - xp))} XP", load_font(17), TEXT_MUTED, anchor="rb")
-
-    bar_h = 24
-    d.rounded_rectangle([bar_x1, bar_y, bar_x2, bar_y + bar_h], radius=12, fill=(28, 32, 48, 240), outline=(70, 80, 115), width=1)
-    fill_w = max(bar_h, int((bar_x2 - bar_x1) * pct))
+    bar_x1, bar_y1, bar_x2, bar_y2 = S(612), S(403), S(1446), S(425)
+    bar_r = S(11)
+    d.rounded_rectangle((bar_x1, bar_y1, bar_x2, bar_y2), radius=bar_r, fill=(36, 36, 42))
     if xp > 0:
-        d.rounded_rectangle([bar_x1, bar_y, min(bar_x2, bar_x1 + fill_w), bar_y + bar_h], radius=12, fill=ACCENT_PURPLE)
+        fill_w = max(bar_r * 2, int((bar_x2 - bar_x1) * progress))
+        d.rounded_rectangle((bar_x1, bar_y1, min(bar_x2, bar_x1 + fill_w), bar_y2),
+                            radius=bar_r, fill=(210, 42, 58))
 
-    # 3. 5 Плашек статистики
-    grid_y1, grid_y2 = 405, 595
-    grid_w = W - 2 * pad_x
-    num_cards = 5
-    card_spacing = 16
-    c_w = (grid_w - (num_cards - 1) * card_spacing) // num_cards
+    d.rounded_rectangle((S(602), S(448), S(875), S(478)), radius=S(6), fill=(10, 8, 10))
+    txt(d, (S(612), S(449)), f"До следующего уровня: {fmt_num(xp_left)} XP",
+        load_font(S(22)), (185, 185, 195), anchor="lt")
 
-    coins_val = f"{fmt_num(stats.get('coins', 0))} монет"
-    msg_val = fmt_num(stats.get("messages", 0))
-    voice_val = format_hm(stats.get("total_seconds", 0))
-    cards_val = f"{stats.get('cards_count', 0)} шт"
+    # 4. Четыре карточки статистики (y = 547..685)
+    # 4.1 БАЛАНС
+    txt(d, (S(180), S(580)), "БАЛАНС", load_font(S(18)), (165, 165, 175), anchor="lt")
+    bal_str, f_bal = fit_text(d, f"{fmt_num(stats['coins'])} {COIN_UNIT}", S(196), S(30), S(18), bold=True)
+    txt(d, (S(180), S(614)), bal_str, f_bal, (255, 255, 255), anchor="lt")
 
-    stat_boxes = [
-        ("БАЛАНС", coins_val, (255, 215, 80), "🪙"),
-        ("СООБЩЕНИЯ", msg_val, (110, 205, 255), "💬"),
-        ("В ВОЙСЕ", voice_val, (130, 240, 160), "🎙️"),
-        ("КАРТОЧЕК", cards_val, (255, 130, 200), "🎴"),
-    ]
+    # 4.2 СООБЩЕНИЯ
+    txt(d, (S(532), S(580)), "СООБЩЕНИЯ", load_font(S(18)), (165, 165, 175), anchor="lt")
+    msg_str, f_msg = fit_text(d, fmt_num(stats["messages"]), S(208), S(32), S(20), bold=True)
+    txt(d, (S(532), S(614)), msg_str, f_msg, (255, 255, 255), anchor="lt")
 
-    for i, (title, val_str, val_col, icon) in enumerate(stat_boxes):
-        cx1 = pad_x + i * (c_w + card_spacing)
-        cx2 = cx1 + c_w
-        d.rounded_rectangle([cx1, grid_y1, cx2, grid_y2], radius=16, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
-        txt(d, (cx1 + c_w // 2, grid_y1 + 45), f"{icon} {title}", load_font(18, True), TEXT_MUTED, anchor="mm")
-        
-        val_fitted, f_val = fit_text(d, val_str, c_w - 20, 25, 16, bold=True)
-        txt(d, (cx1 + c_w // 2, grid_y1 + 115), val_fitted, f_val, val_col, anchor="mm")
-        
-        if title == "В ВОЙСЕ" and current_voice_session > 0:
-            sess_str = f"сессия: {format_hm(current_voice_session)}"
-            txt(d, (cx1 + c_w // 2, grid_y1 + 155), sess_str, load_font(15), (245, 105, 125), anchor="mm")
+    # 4.3 В ВОЙСЕ
+    txt(d, (S(882), S(580)), "В ВОЙСЕ", load_font(S(18)), (165, 165, 175), anchor="lt")
+    voice_str, f_voice = fit_text(d, format_hm(stats["total_seconds"]), S(230), S(30), S(18), bold=True)
+    txt(d, (S(882), S(614)), voice_str, f_voice, (255, 255, 255), anchor="lt")
+    if current_voice_session > 0:
+        txt(d, (S(882), S(654)), f"сессия: {format_hm(current_voice_session)}",
+            load_font(S(15)), (210, 75, 85), anchor="lt")
 
-    # 5-я карточка: Партнёр
-    p_x1 = pad_x + 4 * (c_w + card_spacing)
-    p_x2 = p_x1 + c_w
-    d.rounded_rectangle([p_x1, grid_y1, p_x2, grid_y2], radius=16, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
-    txt(d, (p_x1 + c_w // 2, grid_y1 + 45), "💍 ПАРТНЁР", load_font(18, True), TEXT_MUTED, anchor="mm")
+    # 4.4 ПАРТНЁР (/marry)
+    txt(d, (S(1266), S(580)), "ПАРТНЁР", load_font(S(18)), (165, 165, 175), anchor="lt")
     if partner_name:
         if partner_avatar_bytes:
-            try:
-                pav = circle_avatar(partner_avatar_bytes, 44)
-                panel_overlay.paste(pav, (p_x1 + 15, grid_y1 + 95), pav)
-                d.ellipse([p_x1 + 15, grid_y1 + 95, p_x1 + 59, grid_y1 + 139], outline=(220, 70, 120), width=2)
-                p_clean, f_p = fit_text(d, partner_name, c_w - 75, 21, 15, bold=True)
-                txt(d, (p_x1 + 68, grid_y1 + 117), p_clean, f_p, (255, 185, 215), anchor="lm")
-            except Exception:
-                p_clean, f_p = fit_text(d, partner_name, c_w - 20, 23, 16, bold=True)
-                txt(d, (p_x1 + c_w // 2, grid_y1 + 115), p_clean, f_p, (255, 185, 215), anchor="mm")
+            pav_sz = S(42)
+            pav = circle_avatar(partner_avatar_bytes, pav_sz)
+            px, py = S(1266), S(610)
+            img.paste(pav, (px, py), pav)
+            d.ellipse((px, py, px + pav_sz, py + pav_sz), outline=(210, 48, 60), width=max(1, S(2)))
+            p_text_x = S(1318)
+            p_max_w = S(162)
         else:
-            p_clean, f_p = fit_text(d, partner_name, c_w - 20, 23, 16, bold=True)
-            txt(d, (p_x1 + c_w // 2, grid_y1 + 115), p_clean, f_p, (255, 185, 215), anchor="mm")
+            p_text_x = S(1266)
+            p_max_w = S(214)
+        p_clean, f_partner = fit_text(d, partner_name, p_max_w, S(24), S(16), bold=True)
+        txt(d, (p_text_x, S(631)), p_clean, f_partner, (255, 255, 255), anchor="lm")
     else:
-        txt(d, (p_x1 + c_w // 2, grid_y1 + 105), "Нет пары", load_font(23, True), TEXT_MUTED, anchor="mm")
-        txt(d, (p_x1 + c_w // 2, grid_y1 + 145), "/marry", load_font(16), TEXT_DIM, anchor="mm")
+        txt(d, (S(1266), S(615)), "Нет пары", load_font(S(24), True), (185, 185, 195), anchor="lt")
+        txt(d, (S(1266), S(649)), "/marry", load_font(S(16)), (140, 140, 150), anchor="lt")
 
-    # 4. Блок предупреждений (БЕЗ ПРИЧИНЫ, С ЧЕТКИМ ВЫРАВНИВАНИЕМ)
-    w_y1, w_y2 = 615, 890
-    d.rounded_rectangle([pad_x, w_y1, W - pad_x, w_y2], radius=18, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
+    # 5. Панель предупреждений (y = 713..806)
+    active_warns = min(MAX_WARNS, max(0, stats["active_warns"]))
+    txt(d, (S(162), S(748)), "ПРЕДУПРЕЖДЕНИЯ", load_font(S(26), True), (255, 255, 255), anchor="lm")
+    d.line((S(785), S(724), S(785), S(794)), fill=(85, 36, 40), width=max(1, S(1)))
 
-    active_warns = min(3, max(0, stats.get("active_warns", 0)))
-    warn_col = (95, 230, 155) if active_warns == 0 else (245, 75, 90)
+    warn_col = (255, 255, 255) if active_warns == 0 else (235, 75, 85)
+    txt(d, (S(812), S(738)), f"АКТИВНЫХ: {active_warns} / {MAX_WARNS}",
+        load_font(S(23), True), warn_col, anchor="lm")
+    txt(d, (S(812), S(769)), f"При {MAX_WARNS} активных предупреждениях — бан",
+        load_font(S(17)), (155, 155, 165), anchor="lm")
 
-    txt(d, (pad_x + 35, w_y1 + 45), "⚠️ ПРЕДУПРЕЖДЕНИЯ", load_font(22, True), TEXT_WHITE, anchor="lm")
+    # Звёзды предупреждений
+    for idx, star_x in enumerate((1272, 1349, 1428)):
+        if idx < active_warns:
+            _draw_filled_star(d, S(star_x), S(748), S(27), S(11.5),
+                              fill=(210, 42, 58), outline=(255, 110, 120), width=max(1, S(2)))
 
-    right_x = W - pad_x - 35
-    txt(d, (right_x, w_y1 + 45), f"АКТИВНЫХ: {active_warns} / 3", load_font(20, True), warn_col, anchor="rm")
-
-    dots_start_x = right_x - 210
-    for idx in range(3):
-        dx = dots_start_x - (2 - idx) * 36
-        dy = w_y1 + 45
-        fill_col = (235, 55, 75) if idx < active_warns else (40, 45, 65)
-        d.ellipse([dx - 11, dy - 11, dx + 11, dy + 11], fill=fill_col, outline=(255, 110, 130) if idx < active_warns else (75, 85, 115), width=2)
-
-    d.line([(pad_x + 35, w_y1 + 85), (W - pad_x - 35, w_y1 + 85)], fill=(60, 70, 100, 160), width=1)
-
+    # 6. Нижний блок: ИСТОРИЯ ПРЕДУПРЕЖДЕНИЙ (y = 829..980) - БЕЗ ВЫВОДА ПРИЧИНЫ!
+    txt(d, (S(78), S(844)), "ИСТОРИЯ ПРЕДУПРЕЖДЕНИЙ", load_font(S(22), True), (255, 255, 255), anchor="lt")
     warnings_list = stats.get("warnings") or []
     if not warnings_list:
-        txt(d, (W // 2, w_y1 + 175), "История предупреждений чиста · Замечаний не зафиксировано", load_font(21), TEXT_MUTED, anchor="mm")
+        txt(d, (S(772), S(924)), "История предупреждений пуста",
+            load_font(S(22)), (145, 145, 155), anchor="mm")
     else:
-        for i, (w_id, mod_id, reason, created_at, is_active) in enumerate(warnings_list[:3]):
+        for i, (w_id, mod_id, reason, created_at, is_active) in enumerate(warnings_list[:2]):
             dt_str = datetime.fromtimestamp(created_at, tz=timezone.utc).strftime("%d.%m.%Y")
-            mod_label = (mod_names or {}).get(mod_id) or f"ID {mod_id}"
-            status_tag = " [АКТИВНО]" if is_active else " [СНЯТО]"
-            line = f"• Предупреждение #{w_id} от {dt_str} — Модератор: {mod_label}{status_tag}"
-            col = (255, 190, 195) if is_active else TEXT_MUTED
-            txt(d, (pad_x + 35, w_y1 + 125 + i * 44), line, load_font(19), col, anchor="lm")
-
-    # Склеиваем фон и панели
-    final_img = Image.alpha_composite(img, panel_overlay)
+            mod_label = mod_names.get(mod_id) or f"ID {mod_id}"
+            status_tag = " [активно]" if is_active else " [снято]"
+            # ПРИЧИНА УДАЛЕНА: выводим без reason!
+            line = f"• #{w_id} · {dt_str} — {mod_label}{status_tag}"
+            line_clean, f_line = fit_text(d, line, S(1380), S(20), S(15), bold=False)
+            color = (235, 185, 185) if is_active else (140, 140, 150)
+            txt(d, (S(78), S(888 + i * 36)), line_clean, f_line, color, anchor="lt")
 
     buf = io.BytesIO()
-    final_img.convert("RGB").save(buf, "PNG")
+    img.convert("RGB").save(buf, "PNG")
     buf.seek(0)
     return buf
 
@@ -2174,7 +2103,6 @@ async def profile_cmd(interaction: discord.Interaction, member: discord.Member =
                 except Exception:
                     mod_names[mod_id] = f"ID {mod_id}"
 
-    user_bg = await asyncio.to_thread(get_user_bg, member.id)
     buf = await asyncio.to_thread(
         make_profile_card,
         member.display_name,
@@ -2185,7 +2113,6 @@ async def profile_cmd(interaction: discord.Interaction, member: discord.Member =
         partner_name,
         partner_avatar_bytes,
         mod_names,
-        user_bg,
     )
     await interaction.followup.send(file=discord.File(buf, "profile.png"))
 
