@@ -1317,32 +1317,65 @@ def make_profile_card(
     partner_name: str = None,
     partner_avatar_bytes: bytes = None,
     mod_names: dict = None,
-    bg_key: str = None,
+    bg_key: str = "bg_nil_tree",
 ) -> io.BytesIO:
-    """Рендерит карточку профиля с прозрачным фоном и идеальным выравниванием."""
+    """Рендерит карточку профиля на атмосферном фоне (NilSpace / Agency ARG) с frosted-glass панелями."""
     W, H = 1440, 920
-    # 1. Полностью прозрачный фон (canvas)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
 
-    PANEL_BG = (17, 21, 32, 235)
-    PANEL_BORDER = (85, 75, 135, 180)
-    ACCENT_PURPLE = (165, 95, 255)
+    # 1. Загрузка фона ("тот который скинул" или "тот который был раньше")
+    bg_files = {
+        "bg_nil_tree": os.path.join(BASE_DIR, "backgrounds", "bg_nil_tree.jpg"),
+        "bg_nil_monolith": os.path.join(BASE_DIR, "backgrounds", "bg_nil_monolith.jpg"),
+        "bg_nil_pillars": os.path.join(BASE_DIR, "backgrounds", "bg_nil_pillars.jpg"),
+        "default": BG_PATH,
+        "classic": BG_PATH,
+    }
+    target_bg_path = bg_files.get(bg_key) or bg_files.get("bg_nil_tree") or BG_PATH
+    if not os.path.isfile(target_bg_path):
+        target_bg_path = BG_PATH
+
+    if os.path.isfile(target_bg_path):
+        bg_raw = Image.open(target_bg_path).convert("RGBA")
+        scale = max(W / bg_raw.width, H / bg_raw.height)
+        new_w, new_h = int(bg_raw.width * scale), int(bg_raw.height * scale)
+        bg_resized = bg_raw.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        cx = (new_w - W) // 2
+        cy = (new_h - H) // 2
+        img = bg_resized.crop((cx, cy, cx + W, cy + H))
+    else:
+        img = Image.new("RGBA", (W, H), (14, 16, 24, 255))
+
+    # Мягкое атмосферное затемнение, сохраняющее арт фона
+    darken = Image.new("RGBA", (W, H), (6, 8, 14, 130))
+    img = Image.alpha_composite(img, darken)
+
+    # Scanlines (эффект аналогового хоррора / ARG)
+    d_scan = ImageDraw.Draw(img)
+    for y in range(0, H, 4):
+        d_scan.line([(0, y), (W, y)], fill=(0, 0, 0, 30), width=1)
+
+    # Оверлей для карточек с эффектом матового стекла (Frosted Glass)
+    panel_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(panel_overlay)
+
+    PANEL_FILL = (14, 18, 28, 220)       # Глубокий тёмный полупрозрачный фон блоков
+    PANEL_BORDER = (100, 80, 160, 200)   # Неоновый фиолетовый контур
+    ACCENT_PURPLE = (170, 100, 255)
     TEXT_WHITE = (255, 255, 255)
-    TEXT_MUTED = (165, 175, 200)
-    TEXT_DIM = (125, 135, 160)
+    TEXT_MUTED = (170, 180, 205)
+    TEXT_DIM = (130, 140, 165)
 
     pad_x = 35
 
     # 1. Верхний статус-бар
     top_y = 30
-    d.rounded_rectangle([pad_x, top_y, W - pad_x, top_y + 55], radius=14, fill=(19, 23, 36, 225), outline=PANEL_BORDER, width=2)
+    d.rounded_rectangle([pad_x, top_y, W - pad_x, top_y + 55], radius=14, fill=(16, 20, 32, 225), outline=PANEL_BORDER, width=2)
     txt(d, (pad_x + 25, top_y + 27), "NILSPACE ARCHIVES // СУБЪЕКТ СЕТИ", load_font(21, True), ACCENT_PURPLE, anchor="lm")
     txt(d, (W - pad_x - 25, top_y + 27), "● СТАТУС: АКТИВЕН", load_font(19, True), (95, 230, 155), anchor="rm")
 
     # 2. Основной блок пользователя
     usr_y1, usr_y2 = 105, 385
-    d.rounded_rectangle([pad_x, usr_y1, W - pad_x, usr_y2], radius=18, fill=PANEL_BG, outline=PANEL_BORDER, width=2)
+    d.rounded_rectangle([pad_x, usr_y1, W - pad_x, usr_y2], radius=18, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
 
     av_sz = 210
     av_x, av_y = pad_x + 30, usr_y1 + 35
@@ -1353,7 +1386,7 @@ def make_profile_card(
             av_img = Image.new("RGBA", (av_sz, av_sz), (60, 90, 140, 255))
     else:
         av_img = Image.new("RGBA", (av_sz, av_sz), (60, 90, 140, 255))
-    img.paste(av_img, (av_x, av_y), av_img)
+    panel_overlay.paste(av_img, (av_x, av_y), av_img)
     d.rounded_rectangle([av_x, av_y, av_x + av_sz, av_y + av_sz], radius=16, outline=ACCENT_PURPLE, width=3)
 
     info_x = av_x + av_sz + 35
@@ -1363,14 +1396,14 @@ def make_profile_card(
 
     badge_w, badge_h = 190, 32
     badge_y = usr_y1 + 126
-    d.rounded_rectangle([info_x, badge_y, info_x + badge_w, badge_y + badge_h], radius=8, fill=(130, 55, 240, 80), outline=ACCENT_PURPLE, width=1)
-    txt(d, (info_x + badge_w // 2, badge_y + badge_h // 2), "ИССЛЕДОВАТЕЛЬ", load_font(17, True), (235, 205, 255), anchor="mm")
+    d.rounded_rectangle([info_x, badge_y, info_x + badge_w, badge_y + badge_h], radius=8, fill=(135, 60, 245, 85), outline=ACCENT_PURPLE, width=1)
+    txt(d, (info_x + badge_w // 2, badge_y + badge_h // 2), "ИССЛЕДОВАТЕЛЬ", load_font(17, True), (235, 210, 255), anchor="mm")
 
     lvl_w, lvl_h = 210, 115
     lvl_x = W - pad_x - 30 - lvl_w
     lvl_y = usr_y1 + 35
-    d.rounded_rectangle([lvl_x, lvl_y, lvl_x + lvl_w, lvl_y + lvl_h], radius=14, fill=(24, 28, 44, 240), outline=ACCENT_PURPLE, width=2)
-    txt(d, (lvl_x + lvl_w // 2, lvl_y + 35), "УРОВЕНЬ", load_font(19, True), (185, 165, 240), anchor="mm")
+    d.rounded_rectangle([lvl_x, lvl_y, lvl_x + lvl_w, lvl_y + lvl_h], radius=14, fill=(22, 26, 42, 240), outline=ACCENT_PURPLE, width=2)
+    txt(d, (lvl_x + lvl_w // 2, lvl_y + 35), "УРОВЕНЬ", load_font(19, True), (190, 170, 245), anchor="mm")
     txt(d, (lvl_x + lvl_w // 2, lvl_y + 75), str(stats.get("level", 0)), load_font(44, True), TEXT_WHITE, anchor="mm")
 
     xp = stats.get("xp", 0)
@@ -1381,11 +1414,11 @@ def make_profile_card(
     bar_x2 = W - pad_x - 30
     bar_y = usr_y1 + 225
 
-    txt(d, (bar_x1, bar_y - 12), f"Опыт: {fmt_num(xp)} / {fmt_num(xp_need)} XP ({int(pct*100)}%)", load_font(19, True), (225, 230, 245), anchor="lb")
+    txt(d, (bar_x1, bar_y - 12), f"Опыт: {fmt_num(xp)} / {fmt_num(xp_need)} XP ({int(pct*100)}%)", load_font(19, True), (230, 235, 250), anchor="lb")
     txt(d, (bar_x2, bar_y - 12), f"До след. уровня: {fmt_num(max(0, xp_need - xp))} XP", load_font(17), TEXT_MUTED, anchor="rb")
 
     bar_h = 24
-    d.rounded_rectangle([bar_x1, bar_y, bar_x2, bar_y + bar_h], radius=12, fill=(30, 35, 52, 240), outline=(65, 75, 105), width=1)
+    d.rounded_rectangle([bar_x1, bar_y, bar_x2, bar_y + bar_h], radius=12, fill=(28, 32, 48, 240), outline=(70, 80, 115), width=1)
     fill_w = max(bar_h, int((bar_x2 - bar_x1) * pct))
     if xp > 0:
         d.rounded_rectangle([bar_x1, bar_y, min(bar_x2, bar_x1 + fill_w), bar_y + bar_h], radius=12, fill=ACCENT_PURPLE)
@@ -1412,7 +1445,7 @@ def make_profile_card(
     for i, (title, val_str, val_col, icon) in enumerate(stat_boxes):
         cx1 = pad_x + i * (c_w + card_spacing)
         cx2 = cx1 + c_w
-        d.rounded_rectangle([cx1, grid_y1, cx2, grid_y2], radius=16, fill=PANEL_BG, outline=PANEL_BORDER, width=2)
+        d.rounded_rectangle([cx1, grid_y1, cx2, grid_y2], radius=16, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
         txt(d, (cx1 + c_w // 2, grid_y1 + 45), f"{icon} {title}", load_font(18, True), TEXT_MUTED, anchor="mm")
         
         val_fitted, f_val = fit_text(d, val_str, c_w - 20, 25, 16, bold=True)
@@ -1425,13 +1458,13 @@ def make_profile_card(
     # 5-я карточка: Партнёр
     p_x1 = pad_x + 4 * (c_w + card_spacing)
     p_x2 = p_x1 + c_w
-    d.rounded_rectangle([p_x1, grid_y1, p_x2, grid_y2], radius=16, fill=PANEL_BG, outline=PANEL_BORDER, width=2)
+    d.rounded_rectangle([p_x1, grid_y1, p_x2, grid_y2], radius=16, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
     txt(d, (p_x1 + c_w // 2, grid_y1 + 45), "💍 ПАРТНЁР", load_font(18, True), TEXT_MUTED, anchor="mm")
     if partner_name:
         if partner_avatar_bytes:
             try:
                 pav = circle_avatar(partner_avatar_bytes, 44)
-                img.paste(pav, (p_x1 + 15, grid_y1 + 95), pav)
+                panel_overlay.paste(pav, (p_x1 + 15, grid_y1 + 95), pav)
                 d.ellipse([p_x1 + 15, grid_y1 + 95, p_x1 + 59, grid_y1 + 139], outline=(220, 70, 120), width=2)
                 p_clean, f_p = fit_text(d, partner_name, c_w - 75, 21, 15, bold=True)
                 txt(d, (p_x1 + 68, grid_y1 + 117), p_clean, f_p, (255, 185, 215), anchor="lm")
@@ -1445,9 +1478,9 @@ def make_profile_card(
         txt(d, (p_x1 + c_w // 2, grid_y1 + 105), "Нет пары", load_font(23, True), TEXT_MUTED, anchor="mm")
         txt(d, (p_x1 + c_w // 2, grid_y1 + 145), "/marry", load_font(16), TEXT_DIM, anchor="mm")
 
-    # 4. Блок предупреждений
+    # 4. Блок предупреждений (БЕЗ ПРИЧИНЫ, С ЧЕТКИМ ВЫРАВНИВАНИЕМ)
     w_y1, w_y2 = 615, 890
-    d.rounded_rectangle([pad_x, w_y1, W - pad_x, w_y2], radius=18, fill=PANEL_BG, outline=PANEL_BORDER, width=2)
+    d.rounded_rectangle([pad_x, w_y1, W - pad_x, w_y2], radius=18, fill=PANEL_FILL, outline=PANEL_BORDER, width=2)
 
     active_warns = min(3, max(0, stats.get("active_warns", 0)))
     warn_col = (95, 230, 155) if active_warns == 0 else (245, 75, 90)
@@ -1455,16 +1488,16 @@ def make_profile_card(
     txt(d, (pad_x + 35, w_y1 + 45), "⚠️ ПРЕДУПРЕЖДЕНИЯ", load_font(22, True), TEXT_WHITE, anchor="lm")
 
     right_x = W - pad_x - 35
-    txt(d, (right_x, w_y1 + 45), f"АКТИВНЫХ: {active_warns} / {MAX_WARNS}", load_font(20, True), warn_col, anchor="rm")
+    txt(d, (right_x, w_y1 + 45), f"АКТИВНЫХ: {active_warns} / 3", load_font(20, True), warn_col, anchor="rm")
 
     dots_start_x = right_x - 210
-    for idx in range(MAX_WARNS):
+    for idx in range(3):
         dx = dots_start_x - (2 - idx) * 36
         dy = w_y1 + 45
         fill_col = (235, 55, 75) if idx < active_warns else (40, 45, 65)
         d.ellipse([dx - 11, dy - 11, dx + 11, dy + 11], fill=fill_col, outline=(255, 110, 130) if idx < active_warns else (75, 85, 115), width=2)
 
-    d.line([(pad_x + 35, w_y1 + 85), (W - pad_x - 35, w_y1 + 85)], fill=(55, 65, 95, 160), width=1)
+    d.line([(pad_x + 35, w_y1 + 85), (W - pad_x - 35, w_y1 + 85)], fill=(60, 70, 100, 160), width=1)
 
     warnings_list = stats.get("warnings") or []
     if not warnings_list:
@@ -1474,13 +1507,15 @@ def make_profile_card(
             dt_str = datetime.fromtimestamp(created_at, tz=timezone.utc).strftime("%d.%m.%Y")
             mod_label = (mod_names or {}).get(mod_id) or f"ID {mod_id}"
             status_tag = " [АКТИВНО]" if is_active else " [СНЯТО]"
-            # ПРИЧИНА УДАЛЕНА: выводим аккуратную запись без текста причины
             line = f"• Предупреждение #{w_id} от {dt_str} — Модератор: {mod_label}{status_tag}"
             col = (255, 190, 195) if is_active else TEXT_MUTED
             txt(d, (pad_x + 35, w_y1 + 125 + i * 44), line, load_font(19), col, anchor="lm")
 
+    # Склеиваем фон и панели
+    final_img = Image.alpha_composite(img, panel_overlay)
+
     buf = io.BytesIO()
-    img.save(buf, "PNG")
+    final_img.convert("RGB").save(buf, "PNG")
     buf.seek(0)
     return buf
 
