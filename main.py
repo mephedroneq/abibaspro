@@ -53,6 +53,7 @@ MSG_REWARD_COOLDOWN = 60      # кулдаун на получение моне�
 XP_PER_VOICE_MINUTE = 10      # XP за каждую минуту в голосовом канале
 XP_PER_MESSAGE = 15           # XP за сообщение (с учётом кулдауна)
 COIN_UNIT = "монет"
+DAILY_GAMES_LIMIT = 10         # максимум азартных игр (казино) в день на одного участника
 
 # --- ПРЕДУПРЕЖДЕНИЯ ---
 MAX_WARNS = 3
@@ -368,6 +369,15 @@ def init_db():
                 )
             """)
             c.execute("""
+                CREATE TABLE IF NOT EXISTS daily_games (
+                    user_id INTEGER,
+                    guild_id INTEGER,
+                    date TEXT,
+                    count INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, guild_id, date)
+                )
+            """)
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS bot_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT
@@ -406,6 +416,7 @@ def _export_json_snapshot_unlocked(conn) -> dict:
         "cards": rows_as_dicts("SELECT user_id, guild_id, card_id, count FROM cards"),
         "marriages": rows_as_dicts("SELECT guild_id, user_id, partner_id, married_at FROM marriages"),
         "warnings": rows_as_dicts("SELECT id, guild_id, user_id, moderator_id, reason, created_at, active, removed_at, removed_by FROM warnings"),
+        "daily_games": rows_as_dicts("SELECT user_id, guild_id, date, count FROM daily_games"),
     }
 
 
@@ -469,6 +480,11 @@ def restore_from_json_if_needed():
                     conn.execute(
                         "INSERT OR REPLACE INTO marriages (guild_id, user_id, partner_id, married_at) VALUES (?, ?, ?, ?)",
                         (r["guild_id"], r["user_id"], r["partner_id"], r["married_at"]),
+                    )
+                for r in snap.get("daily_games", []):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO daily_games (user_id, guild_id, date, count) VALUES (?, ?, ?, ?)",
+                        (r["user_id"], r["guild_id"], r["date"], r["count"]),
                     )
                 for r in snap.get("warnings", []):
                     conn.execute(
@@ -961,6 +977,42 @@ def remove_card_from_inventory(user_id: int, guild_id: int, card_id: str, count:
                                  (new_count, user_id, guild_id, card_id))
                 _bump_revision(conn)
                 return True, new_count
+        finally:
+            conn.close()
+
+
+def get_daily_games_played(user_id: int, guild_id: int, today: str = None) -> int:
+    if today is None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _db_lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT count FROM daily_games WHERE user_id = ? AND guild_id = ? AND date = ?",
+                (user_id, guild_id, today)
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+
+def record_game_played(user_id: int, guild_id: int, today: str = None) -> int:
+    if today is None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _db_lock:
+        conn = _connect()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT INTO daily_games (user_id, guild_id, date, count) VALUES (?, ?, ?, 1)
+                    ON CONFLICT(user_id, guild_id, date) DO UPDATE SET count = count + 1
+                """, (user_id, guild_id, today))
+                _bump_revision(conn)
+                row = conn.execute(
+                    "SELECT count FROM daily_games WHERE user_id = ? AND guild_id = ? AND date = ?",
+                    (user_id, guild_id, today)
+                ).fetchone()
+                return int(row[0]) if row else 1
         finally:
             conn.close()
 
@@ -2641,11 +2693,12 @@ async def takecard_cmd(interaction: discord.Interaction, member: discord.Member,
 
 # ---------- КОМАНДЫ: КАЗИНО И АЗАРТНЫЕ ИГРЫ ----------
 class CrashGameView(discord.ui.View):
-    def __init__(self, user: discord.Member, bet: int, guild_id: int):
+    def __init__(self, user: discord.Member, bet: int, guild_id: int, games_today: int):
         super().__init__(timeout=60)
         self.user = user
         self.bet = bet
         self.guild_id = guild_id
+        self.games_today = games_today
         self.multiplier = 1.00
         self.cashed_out = False
         self.crashed = False
@@ -2668,6 +2721,7 @@ class CrashGameView(discord.ui.View):
         new_bal = int(await asyncio.to_thread(get_coins, self.user.id, self.guild_id))
         button.disabled = True
         button.label = f"Выигрыш: {fmt_num(winnings)} монет!"
+        left = max(0, DAILY_GAMES_LIMIT - self.games_today)
         embed = discord.Embed(
             title="🚀 РАКЕТА УСПЕШНО ПОКИНУЛА ОРБИТУ!",
             description=(
@@ -2679,14 +2733,26 @@ class CrashGameView(discord.ui.View):
             ),
             color=discord.Color.green()
         )
+        embed.set_footer(text=f"Игр сегодня: {self.games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {self.user.display_name}")
         await btn_interaction.response.edit_message(embed=embed, view=self)
 
 
-@bot.tree.command(name="crash", description="🚀 Краш-игра: следи за множителем и забери куш вовремя!")
+@bot.tree.command(name="crash", description="🚀 Краш-игра: следи за множителем и забери куш вовремя! (лимит 10 игр/день)")
 @app_commands.guild_only()
 @app_commands.describe(bet="Сумма ставки в монетах")
 async def crash_cmd(interaction: discord.Interaction, bet: int):
     user_id, guild_id = interaction.user.id, interaction.guild.id
+
+    played = await asyncio.to_thread(get_daily_games_played, user_id, guild_id)
+    if played >= DAILY_GAMES_LIMIT:
+        await interaction.response.send_message(
+            f"🛑 **Дневной лимит игр исчерпан!**\n\n"
+            f"Вы уже сыграли максимум игр на сегодня ({DAILY_GAMES_LIMIT}/{DAILY_GAMES_LIMIT}).\n"
+            f"Лимит сбрасывается каждый день в 00:00 UTC. Возвращайтесь завтра!",
+            ephemeral=True
+        )
+        return
+
     if bet < 10:
         await interaction.response.send_message("Минимальная ставка — 10 монет.", ephemeral=True)
         return
@@ -2699,13 +2765,14 @@ async def crash_cmd(interaction: discord.Interaction, bet: int):
         )
         return
 
-    # Списываем ставку
+    # Списываем ставку и фиксируем игру
     await asyncio.to_thread(give_coins, user_id, guild_id, -bet)
+    games_today = await asyncio.to_thread(record_game_played, user_id, guild_id)
+    left = max(0, DAILY_GAMES_LIMIT - games_today)
     schedule_backup()
 
-    # Точка краша (случайный коэффициент с шансом взрыва в любой момент)
     crash_point = round(random.expovariate(0.65) + 1.05, 2)
-    view = CrashGameView(interaction.user, bet, guild_id)
+    view = CrashGameView(interaction.user, bet, guild_id, games_today)
 
     embed = discord.Embed(
         title="🚀 Запуск ракеты...",
@@ -2717,6 +2784,7 @@ async def crash_cmd(interaction: discord.Interaction, bet: int):
         ),
         color=discord.Color.blue()
     )
+    embed.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left})")
     await interaction.response.send_message(embed=embed, view=view)
     msg = await interaction.original_response()
 
@@ -2757,17 +2825,29 @@ async def crash_cmd(interaction: discord.Interaction, bet: int):
             ),
             color=discord.Color.red()
         )
+        embed_loss.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {interaction.user.display_name}")
         try:
             await msg.edit(embed=embed_loss, view=view)
         except Exception:
             pass
 
 
-@bot.tree.command(name="slots", description="🎰 Игровой автомат: испытай удачу и сорви джекпот!")
+@bot.tree.command(name="slots", description="🎰 Игровой автомат: испытай удачу и сорви джекпот! (лимит 10 игр/день)")
 @app_commands.guild_only()
 @app_commands.describe(bet="Сумма ставки в монетах")
 async def slots_cmd(interaction: discord.Interaction, bet: int):
     user_id, guild_id = interaction.user.id, interaction.guild.id
+
+    played = await asyncio.to_thread(get_daily_games_played, user_id, guild_id)
+    if played >= DAILY_GAMES_LIMIT:
+        await interaction.response.send_message(
+            f"🛑 **Дневной лимит игр исчерпан!**\n\n"
+            f"Вы уже сыграли максимум игр на сегодня ({DAILY_GAMES_LIMIT}/{DAILY_GAMES_LIMIT}).\n"
+            f"Лимит сбрасывается каждый день в 00:00 UTC. Возвращайтесь завтра!",
+            ephemeral=True
+        )
+        return
+
     if bet < 5:
         await interaction.response.send_message("Минимальная ставка — 5 монет.", ephemeral=True)
         return
@@ -2780,8 +2860,10 @@ async def slots_cmd(interaction: discord.Interaction, bet: int):
         )
         return
 
-    # Списываем ставку
+    # Списываем ставку и фиксируем игру
     await asyncio.to_thread(give_coins, user_id, guild_id, -bet)
+    games_today = await asyncio.to_thread(record_game_played, user_id, guild_id)
+    left = max(0, DAILY_GAMES_LIMIT - games_today)
 
     symbols = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
     weights = [30, 25, 20, 14, 8, 3]
@@ -2833,11 +2915,11 @@ async def slots_cmd(interaction: discord.Interaction, bet: int):
         embed.add_field(name="Итог", value=f"Потеряно: -{fmt_num(bet)} монет", inline=True)
 
     embed.add_field(name="Баланс", value=f"{fmt_num(new_bal)} монет", inline=False)
-    embed.set_footer(text=f"Игрок: {interaction.user.display_name}")
+    embed.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="coinflip", description="🪙 Подбросить монетку (Орёл или Решка, выигрыш x2)")
+@bot.tree.command(name="coinflip", description="🪙 Подбросить монетку (Орёл или Решка, выигрыш x2, лимит 10 игр/день)")
 @app_commands.guild_only()
 @app_commands.describe(bet="Сумма ставки", choice="Орёл или Решка")
 @app_commands.choices(choice=[
@@ -2846,6 +2928,17 @@ async def slots_cmd(interaction: discord.Interaction, bet: int):
 ])
 async def coinflip_cmd(interaction: discord.Interaction, bet: int, choice: app_commands.Choice[str]):
     user_id, guild_id = interaction.user.id, interaction.guild.id
+
+    played = await asyncio.to_thread(get_daily_games_played, user_id, guild_id)
+    if played >= DAILY_GAMES_LIMIT:
+        await interaction.response.send_message(
+            f"🛑 **Дневной лимит игр исчерпан!**\n\n"
+            f"Вы уже сыграли максимум игр на сегодня ({DAILY_GAMES_LIMIT}/{DAILY_GAMES_LIMIT}).\n"
+            f"Лимит сбрасывается каждый день в 00:00 UTC. Возвращайтесь завтра!",
+            ephemeral=True
+        )
+        return
+
     if bet < 5:
         await interaction.response.send_message("Минимальная ставка — 5 монет.", ephemeral=True)
         return
@@ -2859,6 +2952,8 @@ async def coinflip_cmd(interaction: discord.Interaction, bet: int, choice: app_c
         return
 
     await asyncio.to_thread(give_coins, user_id, guild_id, -bet)
+    games_today = await asyncio.to_thread(record_game_played, user_id, guild_id)
+    left = max(0, DAILY_GAMES_LIMIT - games_today)
 
     flip = random.choice(["orel", "reshka"])
     side_name = "Орёл 🦅" if flip == "orel" else "Решка 🪙"
@@ -2868,26 +2963,36 @@ async def coinflip_cmd(interaction: discord.Interaction, bet: int, choice: app_c
         winnings = bet * 2
         await asyncio.to_thread(give_coins, user_id, guild_id, winnings)
         color = discord.Color.green()
-        result_text = f"🎉 **Вы угадали!** Выпал **{side_name}**!\
-Выигрыш: **+{fmt_num(winnings)}** монет (прибыль +{fmt_num(bet)})"
+        result_text = f"🎉 **Вы угадали!** Выпал **{side_name}**!\nВыигрыш: **+{fmt_num(winnings)}** монет (прибыль +{fmt_num(bet)})"
     else:
         color = discord.Color.red()
-        result_text = f"💀 **Увы, мимо!** Выпал **{side_name}**.\
-Вы выбрали **{choice.name}** и потеряли **{fmt_num(bet)}** монет."
+        result_text = f"💀 **Увы, мимо!** Выпал **{side_name}**.\nВы выбрали **{choice.name}** и потеряли **{fmt_num(bet)}** монет."
 
     schedule_backup()
     new_bal = int(await asyncio.to_thread(get_coins, user_id, guild_id))
 
     embed = discord.Embed(title="🪙 Бросок монетки", description=result_text, color=color)
     embed.add_field(name="Текущий баланс", value=f"{fmt_num(new_bal)} монет")
+    embed.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="dice", description="🎲 Игра в кости против казино (2d6 против 2d6)")
+@bot.tree.command(name="dice", description="🎲 Игра в кости против казино (2d6 против 2d6, лимит 10 игр/день)")
 @app_commands.guild_only()
 @app_commands.describe(bet="Сумма ставки")
 async def dice_cmd(interaction: discord.Interaction, bet: int):
     user_id, guild_id = interaction.user.id, interaction.guild.id
+
+    played = await asyncio.to_thread(get_daily_games_played, user_id, guild_id)
+    if played >= DAILY_GAMES_LIMIT:
+        await interaction.response.send_message(
+            f"🛑 **Дневной лимит игр исчерпан!**\n\n"
+            f"Вы уже сыграли максимум игр на сегодня ({DAILY_GAMES_LIMIT}/{DAILY_GAMES_LIMIT}).\n"
+            f"Лимит сбрасывается каждый день в 00:00 UTC. Возвращайтесь завтра!",
+            ephemeral=True
+        )
+        return
+
     if bet < 5:
         await interaction.response.send_message("Минимальная ставка — 5 монет.", ephemeral=True)
         return
@@ -2901,6 +3006,8 @@ async def dice_cmd(interaction: discord.Interaction, bet: int):
         return
 
     await asyncio.to_thread(give_coins, user_id, guild_id, -bet)
+    games_today = await asyncio.to_thread(record_game_played, user_id, guild_id)
+    left = max(0, DAILY_GAMES_LIMIT - games_today)
 
     p1, p2 = random.randint(1, 6), random.randint(1, 6)
     d1, d2 = random.randint(1, 6), random.randint(1, 6)
@@ -2912,16 +3019,14 @@ async def dice_cmd(interaction: discord.Interaction, bet: int):
     if p_sum > d_sum:
         winnings = bet * 2
         await asyncio.to_thread(give_coins, user_id, guild_id, winnings)
-        res = f"🎉 **Победа!** Вы обошли казино!\
-Выигрыш: **+{fmt_num(winnings)}** монет (прибыль: +{fmt_num(bet)})"
+        res = f"🎉 **Победа!** Вы обошли казино!\nВыигрыш: **+{fmt_num(winnings)}** монет (прибыль: +{fmt_num(bet)})"
         color = discord.Color.green()
     elif p_sum == d_sum:
         await asyncio.to_thread(give_coins, user_id, guild_id, bet)
         res = "🤝 **Ничья!** Очки равны — ставка возвращена в полном объёме."
         color = discord.Color.light_grey()
     else:
-        res = f"💀 **Поражение!** Казино набрало больше очков.\
-Потеряно: **-{fmt_num(bet)}** монет."
+        res = f"💀 **Поражение!** Казино набрало больше очков.\nПотеряно: **-{fmt_num(bet)}** монет."
         color = discord.Color.red()
 
     schedule_backup()
@@ -2939,10 +3044,11 @@ async def dice_cmd(interaction: discord.Interaction, bet: int):
         inline=True
     )
     embed.add_field(name="Баланс", value=f"{fmt_num(new_bal)} монет", inline=False)
+    embed.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="roulette", description="🎡 Европейская рулетка: ставка на цвет, чётность или точное число")
+@bot.tree.command(name="roulette", description="🎡 Европейская рулетка: ставка на цвет, чётность или число (лимит 10 игр/день)")
 @app_commands.guild_only()
 @app_commands.describe(
     bet="Сумма ставки",
@@ -2959,6 +3065,17 @@ async def dice_cmd(interaction: discord.Interaction, bet: int):
 ])
 async def roulette_cmd(interaction: discord.Interaction, bet: int, bet_type: app_commands.Choice[str], number: int = None):
     user_id, guild_id = interaction.user.id, interaction.guild.id
+
+    played = await asyncio.to_thread(get_daily_games_played, user_id, guild_id)
+    if played >= DAILY_GAMES_LIMIT:
+        await interaction.response.send_message(
+            f"🛑 **Дневной лимит игр исчерпан!**\n\n"
+            f"Вы уже сыграли максимум игр на сегодня ({DAILY_GAMES_LIMIT}/{DAILY_GAMES_LIMIT}).\n"
+            f"Лимит сбрасывается каждый день в 00:00 UTC. Возвращайтесь завтра!",
+            ephemeral=True
+        )
+        return
+
     if bet < 5:
         await interaction.response.send_message("Минимальная ставка — 5 монет.", ephemeral=True)
         return
@@ -2976,6 +3093,8 @@ async def roulette_cmd(interaction: discord.Interaction, bet: int, bet_type: app
         return
 
     await asyncio.to_thread(give_coins, user_id, guild_id, -bet)
+    games_today = await asyncio.to_thread(record_game_played, user_id, guild_id)
+    left = max(0, DAILY_GAMES_LIMIT - games_today)
 
     # Европейская рулетка 0-36
     roll = random.randint(0, 36)
@@ -3026,6 +3145,7 @@ async def roulette_cmd(interaction: discord.Interaction, bet: int, bet_type: app
     embed.add_field(name="Выпавший сектор", value=f"**{roll}** ({roll_color})", inline=True)
     embed.add_field(name="Ваша ставка", value=f"{fmt_num(bet)} монет на **{bet_type.name}**", inline=True)
     embed.add_field(name="Текущий баланс", value=f"{fmt_num(new_bal)} монет", inline=False)
+    embed.set_footer(text=f"Игр сегодня: {games_today}/{DAILY_GAMES_LIMIT} (осталось: {left}) · Игрок: {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
 
 
@@ -3033,11 +3153,15 @@ async def roulette_cmd(interaction: discord.Interaction, bet: int, bet_type: app
 @app_commands.guild_only()
 async def games_cmd(interaction: discord.Interaction):
     cur_bal = int(await asyncio.to_thread(get_coins, interaction.user.id, interaction.guild.id))
+    played = await asyncio.to_thread(get_daily_games_played, interaction.user.id, interaction.guild.id)
+    left = max(0, DAILY_GAMES_LIMIT - played)
     embed = discord.Embed(
         title="🎰 Казино и Мини-игры сервера",
-        description=f"Испытай свою удачу и подними монеты!\
-Ваш баланс: **{fmt_num(cur_bal)}** монет\
-",
+        description=(
+            f"Испытай свою удачу и подними монеты!\n"
+            f"Ваш баланс: **{fmt_num(cur_bal)}** монет\n"
+            f"🎯 Сыграно сегодня: **{played}/{DAILY_GAMES_LIMIT}** (осталось: **{left}**)"
+        ),
         color=discord.Color.gold()
     )
     embed.add_field(
@@ -3065,7 +3189,7 @@ async def games_cmd(interaction: discord.Interaction):
         value="Европейская рулетка: ставь на Красное/Чёрное (x2), Чёт/Нечёт (x2), Зеро (x14) или точное число (до **x36**!).",
         inline=False
     )
-    embed.set_footer(text="Помните об ответственности: ставки могут принести как богатство, так и банкротство!")
+    embed.set_footer(text=f"Лимит: {DAILY_GAMES_LIMIT} игр в сутки на всех играх суммарно · Сброс в 00:00 UTC")
     await interaction.response.send_message(embed=embed)
 
 # ---------- АДМИН-КОМАНДЫ И БЭКАП ----------
