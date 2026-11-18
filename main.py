@@ -895,29 +895,6 @@ def get_warnings(guild_id: int, user_id: int, limit: int = 10) -> tuple[int, lis
 
 
 
-def get_user_bg(user_id: int) -> str:
-    with _db_lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT profile_bg FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
-            return row[0] if row and row[0] else "bg_nil_tree"
-        finally:
-            conn.close()
-
-
-def set_user_bg(user_id: int, bg_name: str):
-    with _db_lock:
-        conn = _connect()
-        try:
-            with conn:
-                conn.execute("""
-                    INSERT INTO user_settings (user_id, profile_bg) VALUES (?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET profile_bg = ?
-                """, (user_id, bg_name, bg_name))
-        finally:
-            conn.close()
-
-
 def get_guild_afk_channel_id(guild_id: int) -> int:
     with _db_lock:
         conn = _connect()
@@ -1496,7 +1473,7 @@ def make_profile_card(
             txt(d, (S(78), S(888 + i * 36)), line_clean, f_line, color, anchor="lt")
 
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, "PNG")
+    img.save(buf, "PNG")
     buf.seek(0)
     return buf
 
@@ -2602,30 +2579,6 @@ async def clearwarns_cmd(interaction: discord.Interaction, member: discord.Membe
 
 
 # ---------- КОМАНДЫ: КАСТОМИЗАЦИЯ И AFK НАСТРОЙКИ ----------
-@bot.tree.command(name="profilebg", description="🎨 Выбрать атмосферный стиль фона для карточки профиля")
-@app_commands.guild_only()
-@app_commands.describe(theme="Стиль фона")
-@app_commands.choices(theme=[
-    app_commands.Choice(name="Древо Безмолвия (NilSpace ARG - по умолчанию)", value="bg_nil_tree"),
-    app_commands.Choice(name="Бесконечные Колонны (NilSpace ARG)", value="bg_nil_pillars"),
-    app_commands.Choice(name="Монолиты Тумана (NilSpace ARG)", value="bg_nil_monolith"),
-    app_commands.Choice(name="Классический фон", value="default"),
-])
-async def profilebg_cmd(interaction: discord.Interaction, theme: app_commands.Choice[str]):
-    await asyncio.to_thread(set_user_bg, interaction.user.id, theme.value)
-    names = {
-        "bg_nil_tree": "🌲 Древо Безмолвия (NilSpace ARG)",
-        "bg_nil_pillars": "🏛️ Бесконечные Колонны (NilSpace ARG)",
-        "bg_nil_monolith": "🌫️ Монолиты Тумана (NilSpace ARG)",
-        "default": "🏙️ Классический фон",
-    }
-    await interaction.response.send_message(
-        f"✅ Стиль фона профиля успешно изменён на: **{names.get(theme.value, theme.name)}**!\
-Посмотреть: `/profile`",
-        ephemeral=True
-    )
-
-
 @bot.tree.command(name="setafkchannel", description="👑 Установить голосовой AFK-канал для сервера (администраторы)")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
